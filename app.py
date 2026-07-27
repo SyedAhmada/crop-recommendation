@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
+import requests
 
 from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
@@ -11,13 +12,63 @@ from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 # --- STREAMLIT PAGE SETUP ---
 st.set_page_config(page_title="Crop Recommendation System", layout="wide")
 st.title("🌾 Crop Recommendation System")
-st.write("Predict the best crop for your soil and climate conditions using Machine Learning pipelines!")
+st.write("Predict the best crop for your soil and climate conditions using Machine Learning & Live Weather Data!")
+
+
+# --- HELPER FUNCTIONS FOR LOCATION & WEATHER API ---
+def get_accurate_location_weather(country, state, city):
+    """Fetches exact weather parameters using full location search query."""
+    try:
+        # Build precise location query
+        full_location_query = f"{city.strip()}, {state.strip()}, {country.strip()}"
+
+        # 1. Precise Geocoding
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(full_location_query)}&count=1&language=en&format=json"
+        geo_res = requests.get(geo_url, timeout=5).json()
+
+        # Fallback search if full query didn't match directly
+        if "results" not in geo_res or not geo_res["results"]:
+            fallback_query = f"{city.strip()}, {country.strip()}"
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(fallback_query)}&count=1&language=en&format=json"
+            geo_res = requests.get(geo_url, timeout=5).json()
+
+        if "results" not in geo_res or not geo_res["results"]:
+            return None, f"Could not find coordinates for '{city}, {state}, {country}'. Please check spelling."
+
+        loc_data = geo_res["results"][0]
+        lat = loc_data["latitude"]
+        lon = loc_data["longitude"]
+        resolved_city = loc_data.get("name", city)
+        resolved_admin = loc_data.get("admin1", state)
+        resolved_country = loc_data.get("country", country)
+
+        # 2. Weather Fetching
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m&daily=rain_sum&timezone=auto"
+        w_res = requests.get(weather_url, timeout=5).json()
+
+        temp = round(float(w_res["current"]["temperature_2m"]), 2)
+        humidity = round(float(w_res["current"]["relative_humidity_2m"]), 2)
+
+        # Daily rain sum scaled for seasonal baseline estimation
+        rain_sum = w_res["daily"]["rain_sum"][0] if "daily" in w_res and "rain_sum" in w_res["daily"] else 10.0
+        estimated_rainfall = round(max(float(rain_sum) * 15.0, 50.0), 2)
+
+        return {
+            "display_name": f"{resolved_city}, {resolved_admin}, {resolved_country}",
+            "lat": lat,
+            "lon": lon,
+            "temperature": temp,
+            "humidity": humidity,
+            "rainfall": estimated_rainfall
+        }, None
+
+    except Exception as e:
+        return None, f"Error connecting to weather service: {str(e)}"
 
 
 # --- STEP 1: LOAD & PREPROCESS DATA ---
@@ -25,7 +76,6 @@ st.write("Predict the best crop for your soil and climate conditions using Machi
 def load_and_preprocess_data():
     df = pd.read_csv("merged_crop_dataset.csv")
 
-    # Rename columns to standard names
     df = df.rename(columns={
         "P": "Phosphorous",
         "K": "Potassium",
@@ -54,98 +104,28 @@ PARAM_LIMITS = {
     "Rainfall": {"min": float(df["Rainfall"].min()), "max": float(df["Rainfall"].max())}
 }
 
-# --- STEP 1.5: CROP GROWING GUIDES & PESTICIDE DATABASE ---
+# --- CROP GROWING GUIDES & PESTICIDE DATABASE ---
 CROP_GROWING_GUIDE = {
     "papaya": {
-        "water": "Daily light watering in summer; every 2–3 days in cooler months. Keep soil moist, not flooded.",
+        "water": "Daily light watering in summer; every 2–3 days in cooler months.",
         "season": "Warm tropical / subtropical climate year-round.",
         "harvest": "9 to 11 months after planting.",
-        "pesticide": "Spray **Imidacloprid** or **Neem Oil (10,000 ppm)** to control aphids, mealybugs, and whiteflies transmitting ringspot virus. Apply **Mancozeb** or **Copper Oxychloride** for anthracnose and leaf spot.",
+        "pesticide": "Spray **Imidacloprid** or **Neem Oil** for aphids and mealybugs. Use **Mancozeb** for anthracnose.",
         "tips": "Papayas are sensitive to waterlogging. Ensure excellent soil drainage to prevent root rot."
     },
     "rice": {
         "water": "High / shallow standing water (2–5 cm) required during initial growth stages.",
         "season": "Monsoon / Summer (Kharif season).",
         "harvest": "3 to 5 months after sowing.",
-        "pesticide": "Use **Cartap Hydrochloride** or **Chlorantraniliprole** for stem borer and leaf folder. Spray **Tebuconazole** or **Validamycin** for sheath blight.",
+        "pesticide": "Use **Cartap Hydrochloride** for stem borer. Spray **Validamycin** for sheath blight.",
         "tips": "Stop watering about 10–14 days before harvest to allow grains to mature and dry."
     },
-    "wheat": {
-        "water": "Moderate (4 to 6 light irrigations at key growth stages like tillering and flowering).",
-        "season": "Winter / Cool season (Rabi season).",
+    "jute": {
+        "water": "High water requirement; regular heavy watering or rainfall during early stages.",
+        "season": "Warm, humid monsoon season.",
         "harvest": "4 to 5 months after sowing.",
-        "pesticide": "Spray **Propiconazole** for yellow/brown rust and leaf blight. Use **Thiamethoxam** for aphid control during grain filling stage.",
-        "tips": "Avoid heavy irrigation during harvesting stage to prevent crops from falling over."
-    },
-    "watermelon": {
-        "water": "Deep, regular watering during vine development; reduce water significantly near maturity.",
-        "season": "Warm Summer / Spring.",
-        "harvest": "80 to 100 days (approx. 3 months).",
-        "pesticide": "Apply **Carbaryl** or **Spinosad** for red pumpkin beetle. Spray **Dinocap** or **Hexaconazole** for powdery mildew.",
-        "tips": "Cutting back water 1–2 weeks prior to harvest concentrates sugars for sweeter fruit."
-    },
-    "banana": {
-        "water": "High and frequent watering (keep soil consistently moist, especially during fruit formation).",
-        "season": "Humid, tropical warm regions year-round.",
-        "harvest": "11 to 14 months after planting.",
-        "pesticide": "Inject or drench **Carbofuran** for banana pseudostem weevil and root nematodes. Spray **Propiconazole** for Sigatoka leaf spot disease.",
-        "tips": "Provide windbreaks and heavy organic mulching around the root zone."
-    },
-    "apple": {
-        "water": "Deep watering every 7–10 days during dry spells.",
-        "season": "Cool / Temperate high-altitude climates.",
-        "harvest": "Perennial tree (produces fruit after 3–5 years, harvested in late summer/autumn).",
-        "pesticide": "Apply **Captan** or **Difenoconazole** for scab and powdery mildew. Use **Chlorpyrifos** or **Spirotermát** for San Jose scale and woolly aphids.",
-        "tips": "Prune annually during winter dormancy to maintain air circulation and sunlight penetration."
-    },
-    "mango": {
-        "water": "Regular watering for young trees; mature trees require watering only during fruit set.",
-        "season": "Tropical and subtropical regions with warm summers.",
-        "harvest": "Perennial tree (harvest fruits 4 to 5 months after flowering).",
-        "pesticide": "Spray **Imidacloprid** or **Lambda-cyhalothrin** during flowering against mango hoppers. Use **Carbendazim** or **Copper Oxychloride** for anthracnose.",
-        "tips": "Withhold water during early winter to encourage heavy flowering in spring."
-    },
-    "maize": {
-        "water": "Moderate (requires reliable moisture during tasseling and silking stages).",
-        "season": "Warm summer / Monsoon (Kharif season).",
-        "harvest": "3 to 4 months after sowing.",
-        "pesticide": "Apply **Emamectin Benzoate** or **Spinetoram** to combat Fall Armyworm (FAW). Drench **Phorate** granules in leaf whorls if infestation is severe.",
-        "tips": "Ensure deep soil aeration and avoid water stagnation at the base."
-    },
-    "chickpea": {
-        "water": "Low to minimal (1 to 2 light irrigations usually suffice).",
-        "season": "Winter (Rabi season).",
-        "harvest": "3 to 4 months after sowing.",
-        "pesticide": "Spray **Indoxacarb** or **Flubendiamide** for pod borer (*Helicoverpa armigera*). Drench soil with **Trichoderma viride** or **Carbendazim** for wilt disease.",
-        "tips": "Avoid over-irrigation as it leads to excess leafy growth instead of pods."
-    },
-    "potato": {
-        "water": "Regular, moderate irrigation to keep ridged soil evenly moist.",
-        "season": "Cool season / Winter.",
-        "harvest": "3 to 4 months (90 to 120 days).",
-        "pesticide": "Spray **Mancozeb** or **Cymoxanil + Mancozeb** preventatively for Late Blight (*Phytophthora*). Use **Imidacloprid** for aphids transmitting leaf roll virus.",
-        "tips": "Hill up the soil around growing stems to keep developing tubers buried away from sunlight."
-    },
-    "tomato": {
-        "water": "Regular watering at the root base; avoid spraying leaves.",
-        "season": "Warm spring/summer or dry winter without frost.",
-        "harvest": "2 to 3 months after transplanting.",
-        "pesticide": "Spray **Cyantraniliprole** or **Emamectin Benzoate** for fruit borer (*Tuta absoluta*). Apply **Copper hydroxide** for bacterial leaf spot.",
-        "tips": "Stake plants vertically and apply mulch to conserve moisture and keep fruit off damp soil."
-    },
-    "cotton": {
-        "water": "Moderate water required during vegetative growth; dry weather needed during boll opening.",
-        "season": "Warm / Summer season.",
-        "harvest": "5 to 6 months.",
-        "pesticide": "Use **Profex Super (Profenofos + Cypermethrin)** or **Spinetoram** against bollworms. Use **Diafenthiuron** for whiteflies and aphids.",
-        "tips": "High sunshine and dry weather during harvesting ensure clean, quality cotton bolls."
-    },
-    "coffee": {
-        "water": "Moderate to high rainfall; needs a short dry period to trigger uniform flowering.",
-        "season": "Humid tropical highlands with partial shade.",
-        "harvest": "Perennial (harvest cherries 7 to 9 months after flowering).",
-        "pesticide": "Apply **Triadimefon** or **Hexaconazole** for coffee leaf rust. Use **Chlorpyrifos** or **Beauveria bassiana** for coffee berry borer.",
-        "tips": "Grow under shade trees to prevent leaf scorching and improve bean flavor."
+        "pesticide": "Spray **Endosulfan** or **Neem Oil** for jute semilooper and red spider mite.",
+        "tips": "Harvest when 50% of plants are in pod formation for best fiber quality."
     }
 }
 
@@ -153,7 +133,7 @@ DEFAULT_GUIDE = {
     "water": "Moderate watering — maintain moist, well-drained soil without flooding.",
     "season": "Follow standard regional planting windows.",
     "harvest": "3 to 4 months on average.",
-    "pesticide": "Apply **Neem Oil spray** (5ml/L) bi-weekly for general sucking pests. Use **Mancozeb** or **Carbendazim** if fungal spots appear.",
+    "pesticide": "Apply **Neem Oil spray** bi-weekly. Use **Mancozeb** if fungal spots appear.",
     "tips": "Keep the root zone clear of weeds and incorporate organic compost before planting."
 }
 
@@ -164,7 +144,6 @@ def train_all_models(data):
     X = data.drop(columns=["Crop"])
     y = data["Crop"]
 
-    # Encode target variable
     label_enc = LabelEncoder()
     y_encoded = label_enc.fit_transform(y)
 
@@ -182,11 +161,11 @@ def train_all_models(data):
         ]
     )
 
+    # Note: MLPClassifier has been removed
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
         "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=5),
-        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
-        "Multi-Layer Perceptron (MLP)": MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
+        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42)
     }
 
     trained_pipelines = {}
@@ -205,19 +184,13 @@ def train_all_models(data):
 
         pipeline.fit(X_train, y_train)
         preds = pipeline.predict(X_test)
-
         acc = accuracy_score(y_test, preds)
 
         if acc > best_accuracy:
             best_accuracy = acc
             best_model_name = name
 
-        report = classification_report(
-            y_test,
-            preds,
-            labels=unique_test_labels,
-            target_names=test_target_names
-        )
+        report = classification_report(y_test, preds, labels=unique_test_labels, target_names=test_target_names)
         cm = confusion_matrix(y_test, preds, labels=unique_test_labels)
 
         trained_pipelines[name] = pipeline
@@ -239,25 +212,63 @@ tab1, tab2, tab3 = st.tabs(["🔮 Make Prediction", "📈 Model Comparison", "�
 
 # ==================== TAB 1: PREDICTION ====================
 with tab1:
-    # Display Active Model Efficiency
     st.success(
-        f"🎯 **Automated Model Selection Active:** Predictions will be performed using **{best_model_name}** "
+        f"🎯 **Automated Model Selection Active:** Predictions performed using **{best_model_name}** "
         f"(Highest Accuracy: **{best_accuracy * 100:.2f}%**)."
     )
 
-    st.subheader("Enter Soil & Climate Parameters")
+    # Initialize session state for climate values if not present
+    if "temp_val" not in st.session_state:
+        st.session_state["temp_val"] = 25.0
+    if "hum_val" not in st.session_state:
+        st.session_state["hum_val"] = 70.0
+    if "rain_val" not in st.session_state:
+        st.session_state["rain_val"] = 100.0
+
+    # --- STEP 1: DETAILED LOCATION FORM ---
+    st.subheader("📍 Step 1: Select Your Location (Country, State, City)")
+
+    loc_col1, loc_col2, loc_col3 = st.columns(3)
+    with loc_col1:
+        country_in = st.text_input("Country:", value="India")
+    with loc_col2:
+        state_in = st.text_input("State / Province:", value="Uttar Pradesh")
+    with loc_col3:
+        city_in = st.text_input("City / District:", value="Bareilly")
+
+    if st.button("🌐 Fetch Weather For This Location", type="secondary"):
+        if not country_in or not state_in or not city_in:
+            st.warning("⚠️ Please fill in Country, State, and City.")
+        else:
+            w_data, err = get_accurate_location_weather(country_in, state_in, city_in)
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                st.session_state["temp_val"] = w_data["temperature"]
+                st.session_state["hum_val"] = w_data["humidity"]
+                st.session_state["rain_val"] = w_data["rainfall"]
+                st.info(
+                    f"✅ Exact Location Confirmed: **{w_data['display_name']}** (Lat: {w_data['lat']}, Lon: {w_data['lon']})")
+
+    st.markdown("---")
+
+    # --- STEP 2: SOIL & CLIMATE VALUES ---
+    st.subheader("🧪 Step 2: Soil & Climate Parameters")
 
     col1, col2 = st.columns(2)
     with col1:
+        st.markdown("**Soil Parameters**")
         n = st.number_input("Nitrogen (N)", min_value=-50.0, max_value=500.0, value=50.0)
         p = st.number_input("Phosphorous (P)", min_value=-50.0, max_value=500.0, value=50.0)
         k = st.number_input("Potassium (K)", min_value=-50.0, max_value=500.0, value=50.0)
-        temp = st.number_input("Temperature (°C)", min_value=-20.0, max_value=100.0, value=25.0)
+        ph = st.number_input("pH Level", min_value=-5.0, max_value=20.0, value=6.5)
 
     with col2:
-        humidity = st.number_input("Humidity (%)", min_value=-20.0, max_value=150.0, value=70.0)
-        ph = st.number_input("pH Level", min_value=-5.0, max_value=20.0, value=6.5)
-        rainfall = st.number_input("Rainfall (mm)", min_value=-100.0, max_value=5000.0, value=100.0)
+        st.markdown("**Climate Values (Fetched / Editable)**")
+        temp = st.number_input("Temperature (°C)", min_value=-20.0, max_value=100.0, value=st.session_state["temp_val"])
+        humidity = st.number_input("Humidity (%)", min_value=-20.0, max_value=150.0, value=st.session_state["hum_val"])
+        rainfall = st.number_input("Rainfall (mm)", min_value=-100.0, max_value=5000.0,
+                                   value=st.session_state["rain_val"])
 
     if st.button("Predict Recommended Crop", type="primary"):
         input_values = {
@@ -270,13 +281,13 @@ with tab1:
             "Rainfall": rainfall
         }
 
-        # Validate inputs against original dataset boundaries
+        # Validate bounds
         invalid_params = []
         for param, val in input_values.items():
             min_val = PARAM_LIMITS[param]["min"]
             max_val = PARAM_LIMITS[param]["max"]
             if val < min_val or val > max_val:
-                invalid_params.append(f"**{param}** (Allowed range: {min_val:.2f} to {max_val:.2f})")
+                invalid_params.append(f"**{param}** (Allowed: {min_val:.2f} to {max_val:.2f})")
 
         if invalid_params:
             for error_msg in invalid_params:
@@ -284,7 +295,6 @@ with tab1:
         else:
             input_df = pd.DataFrame([input_values])
 
-            # Automatically select best performing pipeline
             chosen_pipeline = pipelines[best_model_name]
             pred_encoded = chosen_pipeline.predict(input_df)[0]
             crop_raw = label_enc.inverse_transform([pred_encoded])[0]
