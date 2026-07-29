@@ -161,10 +161,16 @@ def train_all_models(data):
         ]
     )
 
+    # Note: MLPClassifier has been removed
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
         "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=5),
-        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42)
+        "Random Forest": RandomForestClassifier(
+        n_estimators=100,
+        max_depth=10,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        random_state=42)
     }
 
     trained_pipelines = {}
@@ -211,26 +217,9 @@ tab1, tab2, tab3 = st.tabs(["🔮 Make Prediction", "📈 Model Comparison", "�
 
 # ==================== TAB 1: PREDICTION ====================
 with tab1:
-    # --- MODEL SELECTION DROPDOWN ---
-    st.subheader("🤖 Model Selection")
-    
-    model_options = [f"Best Model (Auto: {best_model_name})"] + list(pipelines.keys())
-    selected_option = st.selectbox(
-        "Choose the ML model to use for prediction:",
-        options=model_options,
-        index=0
-    )
-
-    if selected_option.startswith("Best Model"):
-        active_model_name = best_model_name
-    else:
-        active_model_name = selected_option
-
-    active_accuracy = metrics[active_model_name]["accuracy"]
-
-    st.info(
-        f"🎯 Active Model: **{active_model_name}** "
-        f"(Test Accuracy: **{active_accuracy * 100:.2f}%**)"
+    st.success(
+        f"🎯 **Automated Model Selection Active:** Predictions performed using **{best_model_name}** "
+        f"(Highest Accuracy: **{best_accuracy * 100:.2f}%**)."
     )
 
     # Initialize session state for climate values if not present
@@ -240,8 +229,6 @@ with tab1:
         st.session_state["hum_val"] = 70.0
     if "rain_val" not in st.session_state:
         st.session_state["rain_val"] = 100.0
-
-    st.markdown("---")
 
     # --- STEP 1: DETAILED LOCATION FORM ---
     st.subheader("📍 Step 1: Select Your Location (Country, State, City)")
@@ -313,13 +300,13 @@ with tab1:
         else:
             input_df = pd.DataFrame([input_values])
 
-            chosen_pipeline = pipelines[active_model_name]
+            chosen_pipeline = pipelines[best_model_name]
             pred_encoded = chosen_pipeline.predict(input_df)[0]
             crop_raw = label_enc.inverse_transform([pred_encoded])[0]
             crop_key = crop_raw.lower().replace(" ", "_")
 
             st.success(
-                f"🌱 Recommended Crop using **{active_model_name}** ({active_accuracy * 100:.2f}% accuracy): **{crop_raw.title()}**")
+                f"🌱 Recommended Crop using **{best_model_name}** ({best_accuracy * 100:.2f}% accuracy): **{crop_raw.title()}**")
 
             guide = CROP_GROWING_GUIDE.get(crop_key, DEFAULT_GUIDE)
 
