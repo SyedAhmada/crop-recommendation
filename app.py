@@ -164,7 +164,7 @@ def train_all_models(data):
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
         "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=5),
-        "Random Forest": RandomForestClassifier(
+        "Random Forest":  RandomForestClassifier(
         n_estimators=100,
         max_depth=10,
         min_samples_split=5,
