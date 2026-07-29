@@ -161,11 +161,15 @@ def train_all_models(data):
         ]
     )
 
-    # Note: MLPClassifier has been removed
+
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
         "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=5),
-        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42)
+        "Random Forest": RandomForestClassifier(n_estimators=100,
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42)
     }
 
     trained_pipelines = {}
