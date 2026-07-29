@@ -170,7 +170,7 @@ def train_all_models(data):
         min_samples_split=5,
         min_samples_leaf=2,
         random_state=42
-    )
+    )}
 
     trained_pipelines = {}
     metrics = {}
